@@ -20,8 +20,6 @@ KEYS = {
     "huggingface": os.environ.get("HF_KEY")
 }
 
-# Free Anonymous Online Database to remember last posted news across serverless restarts
-# Humne aapke channel ke naam par ek unique secure bucket bana diya hai
 KV_URL = "https://kvdb.io/HanuraGlobalBotStore_pintu07/last_link"
 
 def get_last_posted_link():
@@ -65,12 +63,10 @@ def generate_text_ai(prompt):
 
 # --- DYNAMIC IMAGE GENERATION ---
 def generate_image_url(title):
-    # Ab image ka prompt seedhe news ke title se connect hoga taaki har pic alag dikhe!
     prompt = f"Professional editorial illustration for financial news, stock market theme, hyperrealistic, high resolution, depicting: {title}"
     try:
         encoded_prompt = requests.utils.quote(prompt)
-        img_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        return img_url
+        return f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
     except Exception:
         return "https://via.placeholder.com/1024x1024.png?text=Market+News"
 
@@ -85,25 +81,27 @@ def check_and_post_news():
     latest_entry = feed.entries[0]
     latest_link = latest_entry.link
     
-    # Online database se check karega ki duplicate toh nahi hai
     if latest_link == get_last_posted_link():
         return "No new news found. Skipping."
 
     title = latest_entry.get('title', 'Market Update')
     description = latest_entry.get('description', latest_entry.get('summary', 'No description available.'))
 
+    # Strict HTML Prompt
     prompt = f"""
     Analyze this financial news:
     Title: {title}
     Description: {description}
 
-    Provide the output exactly in this format for a Telegram post:
-    🔥 *HOT MARKET UPDATE* 🔥
+    Provide the output exactly in this format for a Telegram post using HTML tags. 
+    CRITICAL: Do NOT use markdown symbols like asterisks (*) or underscores (_). Use <b> for bold text.
 
-    📰 *News Summary:*
+    🔥 <b>HOT MARKET UPDATE</b> 🔥
+
+    📰 <b>News Summary:</b>
     [Write a concise 2-3 sentence engaging tweet/summary here]
 
-    📊 *Market Impact:*
+    📊 <b>Market Impact:</b>
     [Explain clearly what asset classes (Gold, Forex, Crypto, Stocks) will be impacted and whether it's Bullish or Bearish]
     """
 
@@ -115,7 +113,7 @@ def check_and_post_news():
         "chat_id": TELEGRAM_CHANNEL_ID,
         "photo": image_url,
         "caption": final_text,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     
     tg_res = requests.post(telegram_url, json=payload)
@@ -124,7 +122,11 @@ def check_and_post_news():
         save_last_posted_link(latest_link)
         return "Successfully analyzed and posted new news!"
     else:
-        return f"Failed to post to Telegram: {tg_res.text}"
+        # Emergency Fallback: Agar HTML me fir bhi panga ho, to normal text bhej do
+        payload["parse_mode"] = ""
+        requests.post(telegram_url, json=payload)
+        save_last_posted_link(latest_link)
+        return "Posted as plain text due to tag error."
 
 @app.route('/api/index')
 def cron_trigger():
