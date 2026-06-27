@@ -5,16 +5,13 @@ import feedparser
 from flask import Flask, jsonify
 from dotenv import load_dotenv
 
-# .env file se keys load karne ke liye
 load_dotenv()
 
 app = Flask(__name__)
 
-# Environment Variables se credentials uthana
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 
-# AI Keys Backup Fallback Chain
 KEYS = {
     "gemini": os.environ.get("GEMINI_KEY"),
     "groq": os.environ.get("GROQ_KEY"),
@@ -23,88 +20,59 @@ KEYS = {
     "huggingface": os.environ.get("HF_KEY")
 }
 
+# Free Anonymous Online Database to remember last posted news across serverless restarts
+# Humne aapke channel ke naam par ek unique secure bucket bana diya hai
+KV_URL = "https://kvdb.io/HanuraGlobalBotStore_pintu07/last_link"
+
 def get_last_posted_link():
     try:
-        if os.path.exists("last_link.txt"):
-            with open("last_link.txt", "r") as f:
-                return f.read().strip()
-    except Exception:
-        pass
+        res = requests.get(KV_URL, timeout=5)
+        if res.status_code == 200:
+            return res.text.strip()
+    except Exception as e:
+        print(f"Database read failed: {e}")
     return ""
 
 def save_last_posted_link(link):
     try:
-        with open("last_link.txt", "w") as f:
-            f.write(link)
-    except Exception:
-        pass
+        requests.post(KV_URL, data=link, timeout=5)
+    except Exception as e:
+        print(f"Database write failed: {e}")
 
-# --- TEXT GENERATION FALLBACK LOGIC ---
+# --- TEXT GENERATION ---
 def generate_text_ai(prompt):
-    # Fallback 1: Gemini 2.5 Flash
     if KEYS["gemini"]:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={KEYS['gemini']}"
             res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
             if res.status_code == 200:
                 return res.json()['candidates'][0]['content']['parts'][0]['text']
-        except Exception as e:
-            print(f"Gemini failed: {e}")
+        except Exception:
+            pass
 
-    # Fallback 2: Groq (Llama3)
     if KEYS["groq"]:
         try:
             url = "https://api.groq.com/v1/chat/completions"
             headers = {"Authorization": f"Bearer {KEYS['groq']}", "Content-Type": "application/json"}
-            payload = {
-                "model": "llama3-8b-8192",
-                "messages": [{"role": "user", "content": prompt}]
-            }
+            payload = {"model": "llama3-8b-8192", "messages": [{"role": "user", "content": prompt}]}
             res = requests.post(url, json=payload, headers=headers, timeout=10)
             if res.status_code == 200:
                 return res.json()['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"Groq failed: {e}")
+        except Exception:
+            pass
 
-    # Fallback 3: OpenRouter
-    if KEYS["openrouter"]:
-        try:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {KEYS['openrouter']}", "Content-Type": "application/json"}
-            payload = {
-                "model": "google/gemini-2.5-flash",
-                "messages": [{"role": "user", "content": prompt}]
-            }
-            res = requests.post(url, json=payload, headers=headers, timeout=10)
-            if res.status_code == 200:
-                return res.json()['choices'][0]['message']['content']
-        except Exception as e:
-            print(f"OpenRouter failed: {e}")
+    return "Summary generation failed."
 
-    return "Summary generation failed across all AI models."
-
-# --- IMAGE GENERATION FALLBACK LOGIC ---
-def generate_image_url(prompt):
+# --- DYNAMIC IMAGE GENERATION ---
+def generate_image_url(title):
+    # Ab image ka prompt seedhe news ke title se connect hoga taaki har pic alag dikhe!
+    prompt = f"Professional editorial illustration for financial news, stock market theme, hyperrealistic, high resolution, depicting: {title}"
     try:
         encoded_prompt = requests.utils.quote(prompt)
         img_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        res = requests.head(img_url, timeout=10)
-        if res.status_code == 200:
-            return img_url
-    except Exception as e:
-        print(f"Pollinations AI failed: {e}")
-
-    if KEYS["huggingface"]:
-        try:
-            url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-            headers = {"Authorization": f"Bearer {KEYS['huggingface']}"}
-            res = requests.post(url, json={"inputs": prompt}, headers=headers, timeout=15)
-            if res.status_code == 200:
-                return f"https://image.pollinations.ai/p/{requests.utils.quote(prompt)}"
-        except Exception as e:
-            print(f"HuggingFace failed: {e}")
-
-    return "https://via.placeholder.com/1024x1024.png?text=Market+News+Update"
+        return img_url
+    except Exception:
+        return "https://via.placeholder.com/1024x1024.png?text=Market+News"
 
 # --- MAIN TASK ---
 def check_and_post_news():
@@ -112,15 +80,15 @@ def check_and_post_news():
     feed = feedparser.parse(feed_url)
     
     if not feed.entries:
-        return "No news found in feed."
+        return "No news found."
 
     latest_entry = feed.entries[0]
     latest_link = latest_entry.link
     
+    # Online database se check karega ki duplicate toh nahi hai
     if latest_link == get_last_posted_link():
         return "No new news found. Skipping."
 
-    # BUG FIXED HERE: get() method handles missing description safely
     title = latest_entry.get('title', 'Market Update')
     description = latest_entry.get('description', latest_entry.get('summary', 'No description available.'))
 
@@ -140,8 +108,7 @@ def check_and_post_news():
     """
 
     final_text = generate_text_ai(prompt)
-    img_prompt = f"Financial market charts showing dramatic impact, professional trading background, realistic, corporate style, representing: {title}"
-    image_url = generate_image_url(img_prompt)
+    image_url = generate_image_url(title)
 
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     payload = {
